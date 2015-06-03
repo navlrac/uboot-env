@@ -21,7 +21,7 @@ class SizeError(Exception):
   pass
 
 
-def ReadEnviron(file, size=0, offset=0):
+def ReadEnviron(file, size=0, offset=0, nocrc=False, text=False):
   """Reads the u-boot environment variables from a file into a dict."""
   f = open(file, "rb")
   f.seek(offset)
@@ -31,11 +31,19 @@ def ReadEnviron(file, size=0, offset=0):
     data = f.read()
   f.close()
 
-  (crc,) = struct.unpack("I", data[0:4])
-  real_data = data[4:]
+  if not nocrc:
+    (crc,) = struct.unpack("I", data[0:4])
+    real_data = data[4:]
+  else:
+    real_data = data[:]
+    crc = 0
   real_crc = binascii.crc32(real_data) & 0xffffffff
   environ = {}
-  for s in real_data.split('\0'):
+  if text:
+      delim='\n'
+  else:
+      delim='\0'
+  for s in real_data.split(delim):
     if not s:
       break
     key, value = s.split('=', 1)
@@ -43,10 +51,13 @@ def ReadEnviron(file, size=0, offset=0):
 
   return (environ, len(data), crc == real_crc)
 
-def WriteEnviron(file, environ, size, offset=0):
+def WriteEnviron(file, environ, size, offset=0, force=False):
   """Writes the u-boot environment variables from a dict into a file."""
   strings = ['%s=%s' % (k, environ[k]) for k in environ]
   data = '\0'.join(strings + [''])
+
+  if force and not size:
+    size = len(data)+4
 
   # pad with \0
   if len(data) <= size-4:
@@ -56,8 +67,9 @@ def WriteEnviron(file, environ, size, offset=0):
 
   crc = binascii.crc32(data) & 0xffffffff
 
-  f = open(file, "r+b")
-  f.seek(offset)
+  f = open(file, "wb")
+  if offset:
+    f.seek(offset)
   f.write(struct.pack("I", crc)[0:4])
   f.write(data)
   f.close()
@@ -70,17 +82,20 @@ def main(argv):
   parser.add_option('-s', '--size', type='int', dest='size', default=0)
   parser.add_option('--out', type='string', dest='out_filename')
   parser.add_option('--out-offset', type='string', dest='out_offset')
-  parser.add_option('--out-size', type='string', dest='out_size')
+  parser.add_option('--out-size', type='int', dest='out_size')
   parser.add_option('--list', action='store_true', dest='list')
   parser.add_option('--force', action='store_true', dest='force')
+  parser.add_option('--text', action='store_true', dest='text')
+  parser.add_option('--add-crc', action='store_true', dest='nocrc')
   parser.add_option('--get', type='string', action='append', dest='get',
                     default=[])
   parser.add_option('--set', type='string', action='append', dest='set',
                     default=[])
   (options, args) = parser.parse_args()
   (environ, size, crc) = ReadEnviron(options.filename, options.size,
-                                     options.offset)
-  if not crc:
+                                     options.offset, options.nocrc,
+                                     options.text)
+  if not options.nocrc and not crc:
     sys.stderr.write('Bad CRC\n')
     if not options.force:
       sys.exit(1)
@@ -101,7 +116,7 @@ def main(argv):
     environ[key] = value
     do_write = True
 
-  if do_write:
+  if do_write or options.out_filename:
     out_filename = options.out_filename
     out_offset = options.out_offset
     out_size = options.out_size
@@ -109,7 +124,8 @@ def main(argv):
       out_filename = options.filename
       out_offset = options.offset
       out_size = size
-    WriteEnviron(out_filename, environ, out_size, out_offset)
+    WriteEnviron(out_filename, environ, out_size, out_offset,
+            options.force or options.nocrc)
 
 
 if __name__ == '__main__':
